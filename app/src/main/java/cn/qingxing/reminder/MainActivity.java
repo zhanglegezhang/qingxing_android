@@ -46,11 +46,23 @@ public final class MainActivity extends Activity {
     ScrollView contentScroll;int renderedPage=-1;final Map<Integer,Integer> scrollOffsets=new HashMap<>();
     private boolean autostartConfirmationPending;
     private AlertDialog autostartDialog;
+    private android.window.OnBackInvokedCallback exitBackCallback;
     final Map<String,Long> doneTaps=new HashMap<>();
     YearMonth month=YearMonth.now();
     int dp(float n){return (int)(getResources().getDisplayMetrics().density*n+.5f);}
     @Override public void onCreate(Bundle b){super.onCreate(b);store=new Store(this);Alerts.channels(this);MockLocationService.cleanup(this);locationPage=new LocationPage(this);restoreLocationAccess(b);if(b!=null){autostartConfirmationPending=b.getBoolean("autostartConfirmationPending",false);page=Math.max(0,Math.min(4,b.getInt("page",0)));month=YearMonth.parse(b.getString("month",YearMonth.now().toString()));JSONObject saved=Store.json(b.getString("draft","{}"));Iterator<String> it=saved.keys();while(it.hasNext()){String k=it.next();draft.put(k,saved.optString(k));}}locationIntent(getIntent());render();if(store.prefs.getBoolean("firstGuidePending",false)){store.prefs.edit().putBoolean("firstGuidePending",false).commit();handler.post(this::showIntroduction);}}
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(intent.getBooleanExtra("locationPage",false)){locationIntent(intent);render();}}
+    @Override protected void onStart(){
+        super.onStart();
+        if(Build.VERSION.SDK_INT>=33&&exitBackCallback==null){
+            exitBackCallback=this::onBackPressed;
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,exitBackCallback);
+        }
+    }
+    @Override public void onBackPressed(){
+        MockLocationService.stop(this);
+        finish();
+    }
     void restoreLocationAccess(Bundle state){locationUnlocked=state!=null&&UI_SESSION.equals(state.getString("uiSession"))&&state.getBoolean("locationUnlocked",false);}
     void locationIntent(Intent intent){if(intent.getBooleanExtra("locationPage",false)){page=locationUnlocked?4:3;if(locationUnlocked)locationPage.virtual=true;}}
     void resetVersionTaps(){versionTapCount=0;lastVersionTap=-1;}
@@ -66,7 +78,14 @@ public final class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle b){super.onSaveInstanceState(b);stashDraft();JSONObject j=new JSONObject();for(Map.Entry<String,String>e:draft.entrySet())Store.put(j,e.getKey(),e.getValue());b.putString("month",month.toString());b.putInt("page",page);b.putString("draft",j.toString());b.putBoolean("autostartConfirmationPending",autostartConfirmationPending);b.putString("uiSession",UI_SESSION);b.putBoolean("locationUnlocked",locationUnlocked);}
     @Override protected void onResume(){super.onResume();store.prefs.registerOnSharedPreferenceChangeListener(statusListener);Planner.rebuild(this);MonitorService.reconcile(this,true);HolidaySync.schedule(this);render();handler.post(this::showAutostartConfirmation);HolidaySync.start(this,false,()->{if(!isFinishing()&&!isDestroyed()){stashDraft();if(page!=3&&page!=4)render();}});}
     @Override protected void onPause(){store.prefs.unregisterOnSharedPreferenceChangeListener(statusListener);handler.removeCallbacks(refreshHome);resetVersionTaps();commitWifiOnExit();stashDraft();if(locationPage!=null)locationPage.pause();super.onPause();}
-    @Override protected void onDestroy(){handler.removeCallbacksAndMessages(null);if(locationPage!=null)locationPage.close();if(autostartDialog!=null){autostartDialog.setOnCancelListener(null);autostartDialog.dismiss();autostartDialog=null;}super.onDestroy();}
+    @Override protected void onDestroy(){
+        if(isFinishing())MockLocationService.stop(this);
+        if(Build.VERSION.SDK_INT>=33&&exitBackCallback!=null){
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(exitBackCallback);
+            exitBackCallback=null;
+        }
+        handler.removeCallbacksAndMessages(null);if(locationPage!=null)locationPage.close();if(autostartDialog!=null){autostartDialog.setOnCancelListener(null);autostartDialog.dismiss();autostartDialog=null;}super.onDestroy();
+    }
     GradientDrawable bg(int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
     TextView text(String s,int size,int color,boolean bold){TextView t=new TextView(this);t.setText(CheckMark.styled(this,s));t.setTextSize(size);t.setTextColor(color);t.setPadding(0,dp(2),0,dp(2));if(bold)t.setTypeface(null,Typeface.BOLD);return t;}
     LinearLayout card(){return card(body);}

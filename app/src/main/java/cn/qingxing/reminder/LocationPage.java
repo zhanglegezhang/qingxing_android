@@ -35,7 +35,7 @@ final class LocationPage {
         mapText=a.text(mapMessage,11,MainActivity.MUTED,false);card.addView(mapText);
         if(virtual){LinearLayout actions=a.row(card);start=a.action(actions,"开始模拟",this::startMock,true);start.setTag("mock_start");stop=a.action(actions,"停止模拟",()->{MockLocationService.stop(a);message="已停止模拟，等待系统刷新真实位置";handler.postDelayed(this::update,200);update();},false);stop.setTag("mock_stop");
             a.action(card,"模拟位置授权",()->a.open(new Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)),false).setTag("mock_authorize");
-            a.heading(card,"使用说明","在系统开发者选项中，打开“选择模拟位置信息应用”，选择轻醒。模拟运行时通知可停止；切到其他应用后继续，重启后不自动开始。应用可能拒绝模拟位置或采用其他定位来源。");
+            a.heading(card,"使用说明","在系统开发者选项中，打开“选择模拟位置信息应用”，选择轻醒。按返回键退出或从最近任务划掉轻醒会停止模拟；Home、切换应用和锁屏时继续运行，也可在通知中停止。应用可能拒绝模拟位置或采用其他定位来源。");
         }
         update();handler.post(poll);
     }

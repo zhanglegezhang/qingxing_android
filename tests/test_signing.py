@@ -92,7 +92,8 @@ class LocalSigning(unittest.TestCase):
             checked = subprocess.run([str(jdk), '-jar', str(signer), 'verify', '--print-certs', str(output)], capture_output=True, timeout=90)
             self.assertEqual(checked.returncode, 0, 'Signed test copy did not verify')
             actual = re.search(r'Signer #1 certificate SHA-1 digest: ([0-9a-fA-F]+)', checked.stdout.decode('utf-8', 'replace'))
-            expected = json.loads((ROOT / 'release/latest.json').read_text(encoding='utf-8-sig'))['apkMetadata']['signerSha1']
+            version = json.loads((ROOT / 'release/version.json').read_text(encoding='utf-8-sig'))
+            expected = version.get('signing', {}).get('sha1') or json.loads((ROOT / 'release/latest.json').read_text(encoding='utf-8-sig'))['apkMetadata']['signerSha1']
             self.assertIsNotNone(actual)
             self.assertEqual(actual.group(1).lower(), expected.lower())
 

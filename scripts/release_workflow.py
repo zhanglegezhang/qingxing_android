@@ -22,6 +22,7 @@ for stream in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parents[1]
 ANDROID = '{http://schemas.android.com/apk/res/android}'
 REQUIRED = SUITES  # All available suites; a candidate plan determines the required subset.
+LEGACY_SIGNER = '45d07b06c445f72c1a4069645899d3f959d769f5'
 REPORTS = {
     'latest-upgrade': ('latest-upgrade-test-output.txt',),
     'upgrade': ('upgrade-test-output.txt',), 'layout-upgrade': ('layout-upgrade-test-output.txt',),
@@ -55,6 +56,25 @@ def make_plan(root=ROOT, force_full=False, additions=()):
     changed = [p for p in set(previous) | set(current) if previous.get(p) != current.get(p)]
     plan = select(changed, baseline_inputs_valid, force_full, additions)
     plan['baseline'] = baseline
+    current_version = version(root) if (root / 'release/version.json').exists() else {}
+    signing = current_version.get('signing')
+    if signing:
+        previous_signer = data.get('apkMetadata', {}).get('signerSha1') if baseline else None
+        if baseline and previous_signer != signing['sha1']:
+            if (current_version['versionCode'] != signing['firstVersionCode']
+                    or previous_signer != signing['previousSha1']
+                    or baseline['versionCode'] >= signing['firstVersionCode']):
+                raise RuntimeError('Unexpected signing change from the published baseline.')
+            plan['reinstallRequired'] = True
+            plan['reasons']['latest-upgrade'] = ['verify Android rejects old-signature update, then verify clean install and backup import']
+        incompatible = ['upgrade']
+        if not any(seed['versionCode'] >= signing['firstVersionCode'] for seed in current_version.get('upgradeFrom', [])):
+            incompatible.append('layout-upgrade')
+        for suite in incompatible:
+            if suite in plan['required']:
+                plan['required'].remove(suite)
+                plan['reasons'].pop(suite)
+                plan['skipped'][suite] = 'Historical APKs use the retired signing certificate. In-place upgrades from them are incompatible.'
     plan['sourceSha256'] = fingerprint(current)
     substantive = [p for p in changed if p != 'release/version.json']
     plan['documentationOnly'] = bool(substantive) and all(p.endswith('.md') and p != 'AGENTS.md' for p in substantive)
@@ -106,6 +126,14 @@ def version(root=ROOT):
     v = read(root / 'release/version.json')
     if not re.fullmatch(r'\d+\.\d+(?:\.\d+)?', v.get('versionName', '')) or type(v.get('versionCode')) is not int or v['versionCode'] < 1:
         raise RuntimeError('Invalid release/version.json')
+    signing = v.get('signing')
+    if signing is not None and (not isinstance(signing, dict)
+            or not re.fullmatch(r'[0-9a-f]{40}', str(signing.get('sha1', '')))
+            or not re.fullmatch(r'[0-9a-f]{40}', str(signing.get('previousSha1', '')))
+            or signing['sha1'] == signing['previousSha1']
+            or type(signing.get('firstVersionCode')) is not int
+            or not 1 <= signing['firstVersionCode'] <= v['versionCode']):
+        raise RuntimeError('Invalid release signing transition.')
     return v
 
 
@@ -163,7 +191,7 @@ def candidate_path(value=None):
 def validate_candidate(path):
     data = read(path)
     current = version()
-    if any(data.get(k) != current[k] for k in ('versionName', 'versionCode')):
+    if any(data.get(k) != current.get(k) for k in ('versionName', 'versionCode', 'signing')):
         raise RuntimeError('Version changed since candidate build; build a new candidate.')
     if fingerprint(inputs()) != data['sourceSha256']:
         raise RuntimeError('Source/build/test inputs changed since build; build a new candidate.')
@@ -217,7 +245,7 @@ def inspect_apk(apk, expected):
         raise RuntimeError('Actual APK package/version differs from release/version.json')
     certs = subprocess.check_output([str(jdk / 'bin/java.exe'), '-jar', str(signer), 'verify', '--print-certs', str(apk)], cwd=ROOT).decode('utf-8', 'replace')
     sha = re.search(r'Signer #1 certificate SHA-1 digest: ([0-9a-fA-F]+)', certs)
-    if sha is None or sha.group(1).lower() != '45d07b06c445f72c1a4069645899d3f959d769f5':
+    if sha is None or sha.group(1).lower() != expected.get('signing', {}).get('sha1', LEGACY_SIGNER):
         raise RuntimeError('APK signing identity changed; upgrade would be incompatible.')
     return {'package': fields['name'], 'versionName': fields['versionName'], 'versionCode': int(fields['versionCode']), 'signerSha1': sha.group(1).lower()}
 
@@ -351,7 +379,11 @@ def delivery_page(data):
     coverage = data.get('testPlan', {})
     note = '\n测试范围：' + ', '.join(coverage.get('required', [])) + '。未执行：' + ', '.join(coverage.get('skipped', {})) + '。\n' if coverage else ''
     download = f"https://github.com/zhanglegezhang/qingxing_android/releases/download/v{data['versionName']}/{data['file']}"
-    return f"# 当前正式安装包\n\n[下载轻醒 {data['versionName']}]({download}) · [本机安装包](../{data['apk']})\n\n直接覆盖安装，不要先卸载。\n\n版本：{data['versionName']}（{data['versionCode']}）\n\nSHA256：`{data['sha256']}`\n\n[验证记录](../{data['verification']}) · [机器可读交付记录](latest.json)\n\n旧版本仅供追溯。正式下载入口只维护这一处。\n{note}"
+    installation = '直接覆盖安装，不要先卸载。'
+    if data.get('signing'):
+        installation = ('旧签名版本（1.1.2 及更早）需要重装。请先在旧版导出设置，卸载后安装本版，再导入设置并重新授权。'
+                        '设置备份不含打卡记录。已安装新签名版本的用户可以直接覆盖升级。')
+    return f"# 当前正式安装包\n\n[下载轻醒 {data['versionName']}]({download}) · [本机安装包](../{data['apk']})\n\n{installation}\n\n版本：{data['versionName']}（{data['versionCode']}）\n\nSHA256：`{data['sha256']}`\n\n[验证记录](../{data['verification']}) · [机器可读交付记录](latest.json)\n\n旧版本仅供追溯。正式下载入口只维护这一处。\n{note}"
 
 
 def promote(path, root=ROOT):

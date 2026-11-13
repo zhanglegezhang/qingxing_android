@@ -36,14 +36,86 @@ public final class BaiduTests extends Instrumentation {
  double[][] points={{39.908823,116.397470},{23.129,113.264},{31.2304,121.4737},{0,0},{48.8566,2.3522}};
  for(double[] p:points){double[] b=Coordinates.wgsToBd(p[0],p[1]),w=Coordinates.bdToWgs(b[0],b[1]);check(Math.abs(w[0]-p[0])<.000003&&Math.abs(w[1]-p[1])<.000003,"BD09/WGS84 round trip within a metre");}
  check(!Coordinates.valid(Double.NaN,0)&&!Coordinates.valid(91,0)&&!Coordinates.valid(0,181),"invalid input rejected");
- accept();shell("appops set cn.qingxing.reminder android:mock_location allow");main(()->{a.locationPage.virtual=true;a.render();double[] b=Coordinates.wgsToBd(23.129,113.264);a.locationPage.select(b[0],b[1]);a.locationPage.startMock();});waitFor(()->MockLocationService.active,4000,"mock foreground service starts with authorization");
- LocationManager lm=c.getSystemService(LocationManager.class);Thread.sleep(1200);
+ LocationManager lm=c.getSystemService(LocationManager.class);
+ shell("appops set cn.qingxing.reminder android:mock_location allow");
+ main(()->MockLocationService.cleanup(c));
+ Set<String> originalProviders=new HashSet<>(lm.getAllProviders());
+ accept();main(()->{a.locationPage.virtual=true;a.render();double[] b=Coordinates.wgsToBd(23.129,113.264);a.locationPage.select(b[0],b[1]);a.locationPage.startMock();});waitFor(()->MockLocationService.active,4000,"mock foreground service starts with authorization");
+ Thread.sleep(1200);
  for(String provider:new String[]{"gps","network"}){Location l=lm.getLastKnownLocation(provider);check(l!=null&&l.isFromMockProvider(),"system exposes mock flag: "+provider);check(Math.abs(l.getLatitude()-23.129)<.000003&&Math.abs(l.getLongitude()-113.264)<.000003,"system receives converted WGS84 coordinates: "+provider);}
  main(()->a.moveTaskToBack(true));long before=lm.getLastKnownLocation("gps").getElapsedRealtimeNanos();Thread.sleep(2200);check(MockLocationService.active&&lm.getLastKnownLocation("gps").getElapsedRealtimeNanos()>before,"injection continues while another app is foreground");
  main(()->{a.locationUnlocked=false;a.onNewIntent(new Intent(c,MainActivity.class).putExtra("locationPage",true));check(!a.locationUnlocked&&a.page==3,"notification content entry does not reveal hidden tab");check(MockLocationService.active,"hiding the entry does not silently stop an active simulation");});
  Notification notification=null;for(StatusBarNotification item:c.getSystemService(NotificationManager.class).getActiveNotifications())if(item.getId()==601)notification=item.getNotification();check(notification!=null&&(notification.flags&Notification.FLAG_FOREGROUND_SERVICE)!=0,"visible foreground status notification");check(notification.actions!=null&&notification.actions.length==1,"one stop action");notification.actions[0].actionIntent.send();waitFor(()->!MockLocationService.active,3000,"notification stop ends injection");check(lm.getProvider("gps")!=null,"original GPS provider restored");
  main(()->{lm.addTestProvider("gps",false,false,false,false,true,true,true,Criteria.POWER_LOW,Criteria.ACCURACY_FINE);lm.setTestProviderEnabled("gps",true);MockLocationService.cleanup(c);check(lm.getProvider("gps")!=null&&!MockLocationService.active,"startup cleanup recovers an interrupted provider without auto-start");});
+ exitChecks(lm,originalProviders);
  main(()->a.startActivity(new Intent(c,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP|Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)));Thread.sleep(700);main(()->c.startForegroundService(new Intent(c,MockLocationService.class).putExtra("lat",22.5).putExtra("lon",114.0)));waitFor(()->MockLocationService.active,3000,"restart requires explicit user action");shell("appops set cn.qingxing.reminder android:mock_location deny");waitFor(()->!MockLocationService.active,3500,"revoked mock permission automatically stops service");check(!MockLocationService.error.isEmpty(),"permission failure is visible");
  main(()->{a.page=0;a.render();check(!MockLocationService.active,"navigation never restarts stopped simulation");check(!a.store.enabled()&&a.store.round().length()==0,"location tool does not start attendance");});
+ }
+ void exitChecks(LocationManager manager,Set<String> originalProviders)throws Exception{
+     startExitSimulation();
+     ActivityMonitor monitor=addMonitor(MainActivity.class.getName(),null,false);
+     main(a::recreate);
+     MainActivity rebuilt=(MainActivity)waitForMonitorWithTimeout(monitor,5000);
+     removeMonitor(monitor);
+     check(rebuilt!=null,"configuration recreation completes during simulation");
+     a=rebuilt;
+     waitForIdleSync();
+     check(MockLocationService.active,"configuration recreation keeps simulation running");
+
+     shell("input keyevent KEYCODE_HOME");
+     Thread.sleep(1200);
+     long before=manager.getLastKnownLocation("gps").getElapsedRealtimeNanos();
+     try{
+         shell("input keyevent KEYCODE_SLEEP");
+         Thread.sleep(2200);
+         check(MockLocationService.active&&manager.getLastKnownLocation("gps").getElapsedRealtimeNanos()>before,
+             "Home and screen off keep injecting mock coordinates");
+     }finally{
+         shell("input keyevent KEYCODE_WAKEUP");
+         shell("wm dismiss-keyguard");
+     }
+     main(()->a.startActivity(new Intent(c,MainActivity.class)
+         .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP|Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)));
+     waitForIdleSync();
+     shell("input keyevent KEYCODE_BACK");
+     waitFor(()->!MockLocationService.active,4000,"system Back stops simulation");
+     assertSimulationStopped(manager,originalProviders,"Back exit");
+
+     startExitSimulation();
+     main(()->{
+         ActivityManager activityManager=c.getSystemService(ActivityManager.class);
+         java.util.List<ActivityManager.AppTask> tasks=activityManager.getAppTasks();
+         check(!tasks.isEmpty(),"a real app task exists for removal");
+         for(ActivityManager.AppTask task:tasks)task.finishAndRemoveTask();
+     });
+     waitFor(()->!MockLocationService.active,4000,"removing app task stops simulation");
+     assertSimulationStopped(manager,originalProviders,"task removal");
+
+     a=(MainActivity)startActivitySync(new Intent(c,MainActivity.class)
+         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TASK));
+     waitForIdleSync();
+     Thread.sleep(1200);
+     check(!MockLocationService.active,"reopening after exit does not restart simulation");
+ }
+ void startExitSimulation()throws Exception{
+     a=(MainActivity)startActivitySync(new Intent(c,MainActivity.class)
+         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_CLEAR_TASK));
+     waitForIdleSync();
+     main(()->c.startForegroundService(new Intent(c,MockLocationService.class)
+         .putExtra("lat",23.129).putExtra("lon",113.264)));
+     waitFor(()->MockLocationService.active,3000,"explicit simulation starts before exit check");
+ }
+ void assertSimulationStopped(LocationManager manager,Set<String> originalProviders,String reason)throws Exception{
+     Thread.sleep(1200);
+     check(!MockLocationService.active,reason+" remains stopped after a tick interval");
+     for(String provider:new String[]{"gps","network"}){
+         boolean present=manager.getAllProviders().contains(provider);
+         check(present==originalProviders.contains(provider),reason+" restores original provider state "+provider);
+         Location location=present?manager.getLastKnownLocation(provider):null;
+         check(location==null||!location.isFromMockProvider(),reason+" clears mock result "+provider);
+     }
+     for(StatusBarNotification item:c.getSystemService(NotificationManager.class).getActiveNotifications()){
+         check(item.getId()!=601,reason+" clears the mock notification");
+     }
  }
 }

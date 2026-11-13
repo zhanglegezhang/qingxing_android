@@ -1,6 +1,11 @@
 {
-  "versionName": "1.1.2",
-  "versionCode": 24,
+  "versionName": "1.1.3",
+  "versionCode": 25,
+  "signing": {
+    "sha1": "2d9601613d4d543270cf5a90d7e44dd5f1a9e13e",
+    "firstVersionCode": 25,
+    "previousSha1": "45d07b06c445f72c1a4069645899d3f959d769f5"
+  },
   "upgradeFrom": [
     {
       "versionName": "0.5.0",

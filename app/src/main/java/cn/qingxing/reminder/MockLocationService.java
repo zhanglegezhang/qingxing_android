@@ -42,5 +42,21 @@ public final class MockLocationService extends Service {
     }
     void inject(){for(String name:providers){Location l=new Location(name);l.setLatitude(latitude);l.setLongitude(longitude);l.setAccuracy(3);l.setAltitude(0);l.setSpeed(0);l.setBearing(0);l.setTime(System.currentTimeMillis());l.setElapsedRealtimeNanos(SystemClock.elapsedRealtimeNanos());manager.setTestProviderLocation(name,l);}}
     void fail(String message){error=message;new Store(this).debug("虚拟位置","模拟已停止",message,true);stopSelf();}
-    @Override public void onDestroy(){handler.removeCallbacksAndMessages(null);for(String name:providers)try{manager.removeTestProvider(name);}catch(RuntimeException ignored){}providers.clear();if(wake!=null&&wake.isHeld())wake.release();boolean was=active;active=false;stopForeground(true);if(was)new Store(this).debug("虚拟位置","已停止模拟","系统将重新获取真实位置",false);super.onDestroy();}
+    @Override public void onTaskRemoved(Intent rootIntent){
+        stopSimulation();
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
+    }
+    void stopSimulation(){
+        handler.removeCallbacksAndMessages(null);
+        for(String name:providers)try{manager.removeTestProvider(name);}catch(RuntimeException ignored){}
+        providers.clear();
+        if(wake!=null&&wake.isHeld())wake.release();
+        wake=null;
+        boolean was=active;
+        active=false;
+        stopForeground(true);
+        if(was)new Store(this).debug("虚拟位置","已停止模拟","系统将重新获取真实位置",false);
+    }
+    @Override public void onDestroy(){stopSimulation();super.onDestroy();}
 }
